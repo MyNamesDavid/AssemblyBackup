@@ -36,6 +36,7 @@ hStdIn              qword   0                               ;handle to the stand
 Registers           byte    6 dup(0ffh)                        ;Array used to emulate 8 bit registers 
 NumCharsWritten     dword   0                                   ;number of characters written to console
 stdout              qword   0                                   ;handle to the standard output console
+OutputNumber		byte	0
 ;*********************
 ;Comparison bytes
 ;*********************
@@ -145,9 +146,9 @@ RunProgram:
 ;Set Up the Buffer
 ;********************
 				
-					mov		r8,	 offset	Registers
-					mov     rax, offset programBuffer		;Get the address of the programBuffer
-					mov		r11, offset programBuffer		;Keeps the address of the beginning of the programBuffer
+					mov		r10,	 offset	Registers
+					mov     r11, offset programBuffer		;Get the address of the programBuffer
+					mov		r12, offset programBuffer		;Keeps the address of the beginning of the programBuffer
 ;********************************************************
 ;Compare the bytes to decide which which lable to jump to
 ;********************************************************
@@ -156,146 +157,147 @@ Comparison:
 					xor		rcx, rcx							;Used for the index of The Registers array
 					xor		rbx, rbx
 					xor		rdx, rdx
-					xor		r9, r9 
+					xor		r13, r13
 
 					mov     bl, ADDInstruction				;Move the value used to compare the opcode 				
-					cmp		bl, [rax]						;Compare the opcode with the intructions if equal jump to the corresponding lable
+					cmp		bl, [r11]						;Compare the opcode with the intructions if equal jump to the corresponding lable
 					je		ADDLable
 					mov     bl, SUBInstruction				;Move the value used to compare the opcode
-					cmp		bl, [rax]						;Compare the opcode with the intructions if equal jump to the corresponding lable
+					cmp		bl, [r11]						;Compare the opcode with the intructions if equal jump to the corresponding lable
 					je		SUBLable
 					mov     bl, XORInstruction				;Move the value used to compare the opcode
-					cmp		bl, [rax]						;Compare the opcode with the intructions if equal jump to the corresponding lable
+					cmp		bl, [r11]						;Compare the opcode with the intructions if equal jump to the corresponding lable
 					je		XORLable
 					mov     bl, LOADInstruction				;Move the value used to compare the opcode
-					cmp		bl, [rax]						;Compare the opcode with the intructions if equal jump to the corresponding lable
+					cmp		bl, [r11]						;Compare the opcode with the intructions if equal jump to the corresponding lable
 					je		LOADLable
 					mov     bl, LOADRInstruction			;Move the value used to compare the opcode
-					cmp		bl, [rax]						;Compare the opcode with the intructions if equal jump to the corresponding lable
+					cmp		bl, [r11]						;Compare the opcode with the intructions if equal jump to the corresponding lable
 					je		LOADRLable
 					mov     bl, STOREInstruction			;Move the value used to compare the opcode
-					cmp		bl, [rax]						;Compare the opcode with the intructions if equal jump to the corresponding lable
+					cmp		bl, [r11]						;Compare the opcode with the intructions if equal jump to the corresponding lable
 					je		STORELable
 					mov     bl, STORRInstruction			;Move the value used to compare the opcode
-					cmp		bl, [rax]						;Compare the opcode with the intructions if equal jump to the corresponding lable
+					cmp		bl, [r11]						;Compare the opcode with the intructions if equal jump to the corresponding lable
 					je		STORRLable
 					mov     bl, OUTInstruction			    ;Move the value used to compare the opcode
-					cmp		bl, [rax]						;Compare the opcode with the intructions if equal jump to the corresponding lable
+					cmp		bl, [r11]						;Compare the opcode with the intructions if equal jump to the corresponding lable
 					je		OUTLable
 					mov     bl, JNZInstruction			    ;Move the value used to compare the opcode
-					cmp		bl, [rax]						;Compare the opcode with the intructions if equal jump to the corresponding lable
+					cmp		bl, [r11]						;Compare the opcode with the intructions if equal jump to the corresponding lable
 					je		JNZLable
 					mov     bl, HALTInstruction			    ;Move the value used to compare the opcode
-					cmp		bl, [rax]						;Compare the opcode with the intructions if equal jump to the corresponding lable
+					cmp		bl, [r11]						;Compare the opcode with the intructions if equal jump to the corresponding lable
 					je		Finish
 
 
 					
 ADDLable:;done			
-					inc		rax							;Move to register 1
-					mov		bl, [rax]					;Determine which register to use for register 1 
-					inc		rax							;Move to register 2
-					mov		cl, [rax]					;Determine which register to use for register 2
-					mov		cl, [r8+rcx]				;add the value of register 2 with the value obtained from register 1
-					add		[r8+rbx], cl				;Move the value stored in al into the specified emulated register 1
-					inc		rax
+					inc		r11							;Move to register 1
+					mov		bl, [r11]					;Determine which register to use for register 1 
+					inc		r11							;Move to register 2
+					mov		cl, [r11]					;Determine which register to use for register 2
+					mov		cl, [r10+rcx]				;Move the value of register 2 into a temp register
+					add		[r10+rbx], cl				;Add the value stored in the temp register with Emulated register 1
+					inc		r11
 					jmp		Comparison
 
 					
 SUBLable:;done		
-					inc		rax							;Move to register 1
-					mov		bl, [rax]					;Determine which register to use for register 1 
-					inc		rax							;Move to register 2
-					mov		cl, [rax]					;Determine which register to use for register 2
-					mov		cl, [r8+rcx]				;add the value of register 2 with the value obtained from register 1
-					sub		[r8+rbx], cl				;Move the value stored in al into the specified emulated register 1
-					inc		rax
+					inc		r11							;Move to register 1
+					mov		bl, [r11]					;Determine which register to use for register 1 
+					inc		r11							;Move to register 2
+					mov		cl, [r11]					;Determine which register to use for register 2
+					mov		cl, [r10+rcx]				;Move the value of register 2 into a temp register
+					sub		[r10+rbx], cl				;Subtract the value in the temp register with register 1
+					inc		r11
 					jmp		Comparison
 
 XORLable:;Done			
-					inc		rax							;Move to register 1
-					mov		bl, [rax]					;Determine which register to use for register 1 
-					inc		rax							;Move to register 2
-					mov		cl, [rax]					;Determine which register to use for register 2
-					mov		cl, [r8+rcx]				;add the value of register 2 with the value obtained from register 1
-					xor		[r8+rbx], cl				;Move the value stored in al into the specified emulated register 1
-					inc		rax
+					inc		r11							;Move to register 1
+					mov		bl, [r11]					;Determine which register to use for register 1 
+					inc		r11							;Move to register 2
+					mov		cl, [r11]					;Determine which register to use for register 2
+					mov		cl, [r10+rcx]				;add the value of register 2 with the value obtained from register 1
+					xor		[r10+rbx], cl				;XOR the value stored in Register 1 with the value in register 2
+					inc		r11
 					jmp		Comparison
 
-LOADLable:;DOne
-					inc		rax							;Increments from the op code into the register we have to use
-					mov		bl, [rax]					;Move the number of the register into al
-					inc		rax							;Move to the address that we need to use
-					mov		cx, [rax]					;Move the address into a 16 bit register
+LOADLable:;Done
+					inc		r11							;Increments from the op code into the register we have to use
+					mov		bl, [r11]					;Move the number of the register
+					inc		r11							;Move to the address that we need to use
+					mov		cx, [r11]					;Move the address into a 16 bit register
 					xchg	ch, cl						;Exhange the values in bh bl from big endian to little endian
-					mov		dl, [r11 + rcx]			;Move to the correspoinding memory address and put it in the register
-					mov		[r8+rbx], dl				;Move the value found a the address into the emulated register
-					inc     rax
-					inc		rax
+					mov		dl, [r12 + rcx]			    ;Move to the correspoinding memory address and put the value in the register [ProgramBuffer +address]
+					mov		[r10+rbx], dl				;Move the value found a the address into the emulated register
+					inc     r11
+					inc		r11
 					jmp		Comparison
-LOADRLable:		
-					inc		rax							;Increments from the op code into the register we have to use
-					mov		bl, [rax]					;Move the number of the register into al
-					inc		rax							;Move to the address that we need to use
-					mov		cx, [rax]					;Move the address into a 16 bit register
+LOADRLable:;DOne	
+					inc		r11							;Increments from the op code into the register we have to use
+					mov		bl, [r11]					;Move the number of the register into a temp register
+					inc		r11 						;Move to the address that we need to use
+					mov		cx, [r11]					;Move the address into a 16 bit register
 					xchg	ch, cl						;Exhange the values in bh bl from big endian to little endian
-					mov		r9, offset programBuffer	;Load the address of program buffer into r9
-					add		r9, rcx						;Add the address of the program buffer and the address that we want
-					add		dl, [r8 + rbx]				;MOve the value of the emulated register in to a register
-					add		r9, rdx
-					mov		rdx, [r9]					;Store the value of the combined registers in a new register
-					mov		[r8+rbx], dl				;Store the value in the correct register
-					inc     rax
-					inc		rax
+					mov		r13, offset programBuffer	;Load the address of program buffer into r13
+					add		r13, rcx					;Add the address of the program buffer and the address that we want
+					add		dl, [r10 + rbx]				;Move the value of the emulated register in to a register
+					add		r13, rdx					;[ProgramBuffer + Address + register value]
+					mov		dl, [r13]					;Store the value of the combined registers in a new register
+					mov		[r10+rbx], dl				;Store the value in the correct register
+					inc     r11
+					inc		r11
 					
 					jmp		Comparison
-STORELable:		
-					inc		rax							;Points to the address of the operand
-					mov		bx, [rax]					;Puts the address of the instruction into bx
+STORELable:	;DONE	
+					inc		r11							;Points to the address of the operand
+					mov		bx, [r11]					;Puts the address of the instruction into bx
 					xchg	bh, bl						;Change big Endian into little endian
 
-					mov		dl, [r8]					;Put the Value of R0 into a register
-					mov		[rax + rbx], dl				;Store the value of R0 into
+					mov		dl, [r10]					;Put the Value of R0 into a register
+					mov		[r11 + rbx], dl				;Store the value of R0 into the correct address
 
-					inc		rax
-					inc		rax
+					inc		r11
+					inc		r11
 
 					jmp		Comparison
 
-STORRLable:	
+STORRLable:	;DONE?
 
-					inc		rax							;Points to the address of the operand
-					mov		cl, [rax]					;Determine the emulated register number we want
-					inc		rax
-					mov		bx, [rax]					;Puts the address of the instruction into bx
+					inc		r11							;Points to the address of the operand
+					mov		bl, [r11]					;Determine the emulated register number we want
+					inc		r11
+					mov		cx, [r11]					;Puts the address of the instruction into bx
 					
-					xchg	bh, bl						;Change big Endian into little endian
+					xchg	ch, cl						;Change big Endian into little endian
+														
+					mov		r13, offset programBuffer	;Load the address of program buffer into r9
+					add		r13, rcx 					;Add the address of the program buffer and the address that we want
+					add		dl, [r10 + rcx]				;MOve the value of the emulated register in to a register
+					add		r13, rdx					;r13 = [programBuffer + address + Register value]
+					
+					mov		dl, [r10]					;mov the value within R0 to a register 
 
-					mov		r9, offset programBuffer	;Load the address of program buffer into r9
-					add		r9, rbx 					;Add the address of the program buffer and the address that we want
-					add		dl, [r8 + rcx]				;MOve the value of the emulated register in to a register
-					add		r9, rdx						;Move to the correct Address of the password buffer
+					mov		[r13], dl					;Store the value of R0 into the correct address
 
-					mov		dl, [r8]					;mov the value within R0 to a register 
-
-					mov		[r9], dl					;Store the value of R0 into
-
-					inc		rax
-					inc		rax
+					inc		r11
+					inc		r11
 
 					jmp		Comparison
-OUTLable:;TODO				
-					;inc		rax
-					;mov		bl, [rax]					   ;Determine which register to use for register 1
-					;mov		bl, [
-					;mov r12, offset NumCharsWritten              ;Number of characters written will be returned here
-					;mov r13d, SIZEOF                        ;Number of bytes to write to console
-					;mov rdx, offset mymsg                       ;Address of data to write to console
-					;mov rcx,stdout                              ;Handle where to write
-                    ;call WriteConsoleA
-					;jmp		Comparison
+OUTLable:;TODO	DONE?			
+					 inc		r11
+					 mov		bl, [r11]					     ;Determine which register to use for register 1
+					 mov        r9, offset NumCharsWritten              ;Number of characters written will be returned here
+                     mov        r8d, SIZEOF OutputNumber                       ;Number of bytes to write to console
+                     mov        rdx, offset	Registers                       ;Address of data to write to console
+					 add		rdx, rbx									;Move to correct Register
+                     mov        rcx,stdout                              ;Handle where to write
+                     call       WriteConsoleA
+					 inc		r11
+					 jmp		Comparison
 JNZLable:;TODO					
-					;inc		rax							;Move to register 1
+					;inc		r11							;Move to register 1
 					;mov		bl, [rdx]					;Determine which register to use for register 1
 					;mov		al, [r9+r10]				;move the value of register and move the value to al
 					;inc		rdx							;move to the next instruction
