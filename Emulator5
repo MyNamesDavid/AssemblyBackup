@@ -1,0 +1,337 @@
+        include Win64API.inc
+
+        .DATA
+
+;---------------------
+; EQUATES 
+;---------------------
+
+MAX_RAM             EQU     1024                            ;Maximum size of emulated CPU's RAM
+INVALID_HANDLE      EQU     -1                              ;CreateFile returns this value if it failed
+_CR                 EQU     0Dh                             ;Carriage return character
+_LF                 EQU     0Ah                             ;Line Feed (new line) character
+NULL_PTR            EQU     0
+ERROR               EQU     1                               ;return code indicating an error occurred
+READ_FILE_ERROR     EQU     0                               ;ReadFile will return 0 if an error occurred
+
+;---------------------
+;variables
+;---------------------
+
+errMsgFileOpen      byte    "ERROR:  Unable to open input file", _CR, _LF
+
+filename            byte    "machine.bin", NULL            ;file name must be null terminated
+
+programBuffer       byte    MAX_RAM dup (0)                 ;max size of RAM 1K
+
+returnCode          dword   0                               ;used to return program status back to OS
+
+bytesWritten        dword   0
+BytesRead           dword   0                               ;number of bytes read from file will be stored here
+fileHandle          qword   0                               ;handle to file containing program
+fileSize            dword   0                               ;size of file
+hStdOut             qword   0                               ;handle to the standard output
+hStdIn              qword   0                               ;handle to the standard input
+
+Registers           byte    6 dup(0ffh)                        ;Array used to emulate 8 bit registers 
+NumCharsWritten     dword   0                                   ;number of characters written to console
+
+;*********************
+;Comparison bytes
+;*********************
+
+ADDInstruction		equ		11h
+SUBInstruction		equ		22h
+XORInstruction		equ		44h
+LOADInstruction		equ		05h
+LOADRInstruction	equ		55h
+STOREInstruction	equ		06h
+STORRInstruction	equ		66h		
+OUTInstruction		equ		0CCh
+JNZInstruction		equ		0AAh
+HALTInstruction		equ		0FFh
+;*********************
+;Other Equates
+;*********************
+
+ADDRESSIncrement	equ		02h
+ZERO				equ		00h
+
+                    .CODE
+
+Main                Proc
+
+                    sub     rsp,40                          ;shadow memory and align stack
+                                                            ;32 bytes for shadow memory
+                                                            ; 8 bytes to align stack
+
+                    ;*********************************
+                    ; Get Handle to Standard output
+                    ;*********************************
+                    mov     ecx,STD_OUTPUT_HANDLE           ;pass handle to get in ecx
+                    call    GetStdHandle                    ;call Windows API
+                    mov     hStdOut,rax                     ;save returned handle
+
+                    ;*********************************
+                    ; Get Handle to Standard input
+                    ;*********************************
+                    mov     ecx,STD_INPUT_HANDLE            ;pass handle to get in ecx
+                    call    GetStdHandle                    ;call Windows API
+                    mov     hStdIn,rax                      ;save returned handle
+
+                    ;*********************************
+                    ; Open existing file for Reading
+                    ;*********************************
+                    mov     rcx,offset fileName             ;name of file to open
+                    mov     rdx,GENERIC_READ                ;
+                    mov     r8,FILE_SHARE_NONE              ;file sharing - NONE
+                    mov     r9,NULL_PTR                     ;
+                    mov     qword ptr [rsp+32],OPEN_EXISTING            ;file must exist
+                    mov     qword ptr [rsp+40],FILE_ATTRIBUTE_NORMAL    ;file attribute - normal
+                    mov     qword ptr [rsp+48],NULL_PTR                 ;
+                    call    CreateFileA
+                    cmp     eax,INVALID_HANDLE              ;was open successful?
+                    je      OpenError                       ;No....Display error and Exit
+                    mov     fileHandle,rax                  ;Yes...then save file handle
+
+                    ;********************************************
+                    ; Determine the size of the file (in bytes)
+                    ;********************************************
+                    mov     rcx,fileHandle                  ;handle of open file
+                    mov     rdx,NULL_PTR                    ;
+                    call    GetFileSize                     ;Windows API function - returns file size
+                    mov     fileSize, eax
+
+                    ;********************************************
+                    ; Make sure the size of the file doesn't 
+                    ; exceed our buffer size. If it does then exit
+                    ;********************************************
+                    cmp     fileSize,LENGTHOF programBuffer ;Is file size greater than our buffer?
+                    jc      ReadFromFile                    ;no...then read the entire file into our buffer
+                    mov     returnCode,ERROR                ;yes..set return code to error
+                    jmp     CloseFile                       ;     and exit
+
+                    ;****************************************
+                    ; Read the entire file into emulator RAM
+                    ;****************************************
+ReadFromFile:
+                    mov     rcx,fileHandle                  ;handle to the file to read
+                    mov     rdx,offset programBuffer        ;where to put data read
+                    mov     r8d,fileSize                    ;number of bytes to read
+                    mov     r9,offset bytesRead             ;returns bytes read in this variable
+                    xor     rax,rax                         ;last parameter is 0
+                    mov     [rsp+32],rax                    ;parameters > 4 are passed on the stack
+                    call    ReadFile                        ;read the entire file into programBuffer
+                    cmp     eax,READ_FILE_ERROR             ;was read successful?
+                    jne     RunProgram                      ;Yes..then execute the program
+                    mov     returnCode,ERROR                ;no...set return code to error
+                                                            ;     and close file and exit
+                    ;*********************************
+                    ; Close the file
+                    ;*********************************
+CloseFile:
+                    mov     rcx,fileHandle                  ;pass in handle to the file to close
+                    call    CloseHandle
+                    jmp     Finish
+
+OpenError:
+                    ;Let user know there was an error opening the file
+                    mov     rcx,hStdOut                     ;1st parameter - handle of where to send message
+                    mov     rdx,OFFSET errMsgFileOpen       ;2nd parameter - message to display
+                    mov     r8,LENGTHOF errMsgFileOpen      ;3rd parameter - number of characters to display
+                    mov     r9,OFFSET bytesWritten          ;4th parameter - pointer where bytes written will be stored
+                    xor     rax,rax                         ;last parameter is 0
+                    mov     [rsp+32],rax                    ;parameters > 4 are passed on the stack
+                    call    WriteConsoleA                   ;display the error message
+                    mov     returnCode,ERROR                ;let caller know there was an error
+                    jmp     finish                          ;exit program
+
+RunProgram:
+;********************
+;Set Up the Buffer
+;********************
+				
+					mov		r10,	 offset	Registers
+					mov     r11, offset programBuffer		;Get the address of the programBuffer
+;********************************************************
+;Compare the bytes to decide which which lable to jump to
+;********************************************************
+
+Comparison:
+					XOR rbx,rbx
+					xor	rcx, rcx
+					xor rdx, rdx
+
+					mov     bl, ADDInstruction				;Move the value used to compare the opcode 				
+					cmp		bl, [r11]						;Compare the opcode with the intructions if equal jump to the corresponding lable
+					je		ADDLable
+					mov     bl, SUBInstruction				;Move the value used to compare the opcode
+					cmp		bl, [r11]						;Compare the opcode with the intructions if equal jump to the corresponding lable
+					je		SUBLable
+					mov     bl, XORInstruction				;Move the value used to compare the opcode
+					cmp		bl, [r11]						;Compare the opcode with the intructions if equal jump to the corresponding lable
+					je		XORLable
+					mov     bl, LOADInstruction				;Move the value used to compare the opcode
+					cmp		bl, [r11]						;Compare the opcode with the intructions if equal jump to the corresponding lable
+					je		LOADLable
+					mov     bl, LOADRInstruction			;Move the value used to compare the opcode
+					cmp		bl, [r11]						;Compare the opcode with the intructions if equal jump to the corresponding lable
+					je		LOADRLable
+					mov     bl, STOREInstruction			;Move the value used to compare the opcode
+					cmp		bl, [r11]						;Compare the opcode with the intructions if equal jump to the corresponding lable
+					je		STORELable
+					mov     bl, STORRInstruction			;Move the value used to compare the opcode
+					cmp		bl, [r11]						;Compare the opcode with the intructions if equal jump to the corresponding lable
+					je		STORRLable
+					mov     bl, OUTInstruction			    ;Move the value used to compare the opcode
+					cmp		bl, [r11]						;Compare the opcode with the intructions if equal jump to the corresponding lable
+					je		OUTLable
+					mov     bl, JNZInstruction			    ;Move the value used to compare the opcode
+					cmp		bl, [r11]						;Compare the opcode with the intructions if equal jump to the corresponding lable
+					je		JNZLable
+					mov     bl, HALTInstruction			    ;Move the value used to compare the opcode
+					cmp		bl, [r11]						;Compare the opcode with the intructions if equal jump to the corresponding lable
+					je		Finish
+
+
+					
+ADDLable:;done 100%			
+					inc		r11							;Move to register 1
+					mov		bl, [r11]					;Determine which register to use for register 1 
+					inc		r11							;Move to register 2
+					mov		cl, [r11]					;Determine which register to use for register 2
+					mov		cl, [r10+rcx]				;Move the value of register 2 into a temp register
+					add		[r10+rbx], cl				;Reg1 + Reg2 = Reg 1
+					inc		r11
+					jmp		Comparison
+
+					
+SUBLable:;done		
+					inc		r11							;Move to register 1
+					mov		bl, [r11]					;Determine which register to use for register 1 
+					inc		r11							;Move to register 2
+					mov		cl, [r11]					;Determine which register to use for register 2
+					mov		cl, [r10+rcx]				;Move the value of register 2 into a temp register
+					sub		[r10+rbx], cl				;Subtract the value in the temp register with register 1
+					inc		r11
+					jmp		Comparison
+
+XORLable:;Done	100%		
+					inc		r11							;Move to register 1
+					mov		bl, [r11]					;Determine which register to use for register 1 
+					inc		r11							;Move to register 2
+					mov		cl, [r11]					;Determine which register to use for register 2
+					mov		cl, [r10+rcx]				;add the value of register 2 with the value obtained from register 1
+					xor		[r10+rbx], cl				;XOR the value stored in Register 1 with the value in register 2
+					inc		r11
+					jmp		Comparison
+
+LOADLable:;Done  100%
+					mov		r12, offset programBuffer
+					inc		r11							;Increments from the op code into the register we have to use
+					mov		bl, [r11]					;Move the number of the register
+					inc		r11							;Move to the address that we need to use
+					mov		cx, [r11]					;Move the address into a 16 bit register
+					xchg	ch, cl						;Exhange the values in bh bl from big endian to little endian
+					mov		dl, [r12 + rcx]			    ;Move to the correspoinding memory address and put the value in the register [ProgramBuffer +address]
+					mov		[r10+rbx], dl				;Move the value found a the address into the emulated register
+					add		r11, ADDRESSIncrement
+					jmp		Comparison
+LOADRLable:;DOne	100%
+					inc		r11							;Increments from the op code into the register we have to use
+					mov		bl, [r11]					;Move the number of the register into a temp register
+					inc		r11 						;Move to the address that we need to use
+					mov		cx, [r11]					;Move the address into a 16 bit register
+					xchg	ch, cl						;Exhange the values in bh bl from big endian to little endian
+					mov		r12, offset programBuffer	;Load the address of program buffer into r13
+					add		r12, rcx					;Add the address of the program buffer and the address that we want
+					add		dl, [r10 + rbx]				;Move the value of the emulated register in to a register
+					add		r12, rdx					;[ProgramBuffer + Address + register value]
+					mov		dl, [r12]					;Store the value of the combined registers in a new register
+					mov		[r10+rbx], dl				;Store the value in the correct register
+					add		r11, ADDRESSIncrement
+					
+					jmp		Comparison
+STORELable:	;DONE 100%	
+					mov		r12, offset programBuffer
+					inc		r11							;Points to the address of the operand
+					mov		bx, [r11]					;Puts the address of the instruction into bx
+					xchg	bh, bl						;Change big Endian into little endian
+
+					mov		cl, [r10]					;Put the Value of R0 into a register
+					mov		[r12 + rbx], cl				;Store the value of R0 into the correct address
+
+					inc		r11
+					inc		r11
+
+					jmp		Comparison
+
+STORRLable:	;Done 100%
+
+					inc		r11							;Points to the address of the operand
+					mov		bl, [r11]					;Determine the emulated register number we want
+					inc		r11
+					mov		cx, [r11]					;Puts the address of the instruction into bx
+					
+					xchg	ch, cl						;Change big Endian into little endian
+														
+					mov		r12, offset programBuffer	;Load the address of program buffer into r9
+					add		r12, rcx 					;Add the address of the program buffer and the address that we want
+					add		dl, [r10 + rbx]				;MOve the value of the emulated register in to a register
+					add		r12, rdx					;r13 = [programBuffer + address + Register value]
+					
+					mov		dl, [r10]					;mov the value within R0 to a register 
+
+					mov		[r12], dl					;Store the value of R0 into the correct address
+
+					add		r11, ADDRESSIncrement
+
+					jmp		Comparison
+OUTLable:;TODO	DONE?			
+					 inc		r11
+					 mov		bl, [r11]								 ;Determine which register to use for register 1
+
+					 xor        rax, rax                                ;last parameter is 0
+					 mov        [rsp+32], rax                           ;parameters > 4 are passed on the stack
+					 mov        r9, offset NumCharsWritten               ;Number of characters written will be returned here
+                     mov        r8d, TYPE Registers						  ;Number of bytes to write to console
+                     mov        rdx, offset	Registers                    ;Address of data to write to console
+					 add		rdx, rbx								;Move to correct Register
+                     mov        rcx, hStdOut                              ;Handle where to write
+					 push		r10							;Perserve emulated address registers
+					 push		r11										;Perserve the data in the stack
+                     call       WriteConsoleA
+					 pop		r11
+					 pop		r10
+					 inc		r11
+					 jmp		Comparison
+JNZLable:;TODO					
+					 inc		r11							;Move to register 1
+					 mov		bl, [r11]					;Determine which register to use for register 1
+					 mov		bl, [r10+rbx]				;move the value of register and move the value to al
+					 inc		r11							;move to the next instruction
+					 mov		cx, [r11]					;mov the address into the register
+					 xchg		ch, cl 
+					 add		r11, ADDRESSIncrement
+					 cmp		bl, ZERO						;Compares the value of register 1 with zero
+					 je		    Comparison					;If the comparison is equal to zero jump to the comparison lable 
+					 mov		r11, offset programBuffer	;If not equal to zero the next instruction is att programBuffer+address
+					 add		r11, rcx 
+					 jmp		Comparison
+
+
+
+
+
+
+
+
+Finish:;done
+                    ;Terminate Program
+                    mov     ecx,returnCode                  ;parameter 1 contains the return code
+                    call    ExitProcess                     ;Windows API - terminates the program
+
+Main                endp
+
+                    END
+
