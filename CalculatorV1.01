@@ -1,0 +1,332 @@
+                include win64api.inc
+
+MAX_EXP_SIZE    equ     80
+CR              equ     0Dh
+LF              equ     0Ah
+NULL            equ     0
+
+                .DATA
+bytesRead       dword   0                                       ;number of characters read
+bytesWritten    dword   0                                       ;number of characters wrote to console
+hStdInput       qword   0                                       ;handle to the standard input device
+hStdOutput      qword   0                                       ;handle to the standard output device
+
+expressionBuffer byte    MAX_EXP_SIZE dup (0)                    ;buffer to hold expression entered by user
+Total			byte   100 dup(0)										;Hold the total
+
+
+EnterInputMsg   byte    "Please Enter A Valid Expression: "
+InvalidMsg		byte    "Invalid Entry",LF
+
+;**********************************************************
+;Equates for mathmatical signs
+;**********************************************************
+PLUS			equ		2Bh
+MINUS			equ     2Dh
+DIVIDE			equ		2Fh
+MULTIPLY		equ		2Ah
+EXCLAMATION     equ		21h
+ZERO			equ		30h
+NINE			equ		39h
+
+MAX_NUMBER		equ		06h
+THIRTY			equ		30h
+SQUARE			equ		10h
+
+;********************************************************
+;HEX
+;********************************************************
+
+
+
+
+                .CODE
+
+Main            Proc
+
+                sub     rsp,40                                  ;shadow memory and align stack
+                                                                ;32 bytes for shadow memory
+                                                                ; 8 bytes to align stack
+
+                ;*******************************************************
+                ; Get Handle To Standard Output Device
+                ; In order to write to the console we need to get a 
+                ; handle to the standard output device
+                ;*******************************************************
+                mov     ecx,STD_OUTPUT_HANDLE                   ;pass handle to get in ecx
+                call    GetStdHandle                            ;call Windows API function
+                mov     hStdOutput,rax                          ;Save the handle to the windows console
+
+                ;*******************************************************
+                ; Get Handle To Standard Input Device
+                ; In order to read from standard input device
+                ; we need to get a handle to the standard input device
+                ;*******************************************************
+                mov     ecx,STD_INPUT_HANDLE                    ;pass handle to get in ecx
+                call    GetStdHandle                            ;call Windows API function
+                mov     hStdInput,rax                           ;Save the handle to the windows console
+
+                ;*******************************************************
+                ; Prompt User to enter their Postfix Expression
+                ;*******************************************************
+                ;Let user know if the password matched
+                mov     rcx,hStdOutput                          ;
+                mov     rdx,OFFSET EnterInputMsg                  ;message to display
+                mov     r8,LENGTHOF EnterInputMsg                 ;number of characters to display
+                mov     r9,OFFSET EnterInputMsg                  ;number of characters displayed will be return here
+                xor     rax, rax                                ;last parameter is 0
+                mov     [rsp+32], rax                           ;parameters > 4 are passed on the stack
+                call    WriteConsoleA
+
+
+                ;*******************************************************
+                ; Get user input for Expression
+                ;*******************************************************
+                xor     rax,rax                                 ;last parameter is NULL
+                mov     [rsp+32],rax                            ;parameters > 4 are passed on the stack
+                mov     r9,OFFSET bytesRead                     ;Number of characters read will be returned here
+                mov     r8d,SIZEOF expressionBuffer               ;Maximum number of bytes to read
+                mov     rdx,OFFSET expressionBuffer               ;Address of where to store input data
+                mov     rcx,hStdInput                           ;Handle standard input device
+                call    ReadConsoleA
+
+				 ;*******************************************************
+                ; Sanity check, bytes read should never be zero
+                ; unless input parameters to ReadConsole were wrong 
+                ;*******************************************************
+                cmp     bytesRead,NULL                          ;is bytes read equal to Zero
+                je      InvalidEntry
+
+
+                ;*******************************************************
+                ; Setup [RSI + RBX] to point to last character entered
+                ;*******************************************************
+                mov     rsi,offset expressionBuffer             ;rsi is a pointer to passwordBuffer
+                mov     ebx,bytesRead                           ;rbx is index into passwordBuffer
+                dec     rbx                                     ;subtract one since array is zero based
+
+                ;*******************************************************
+                ; Check for Line Feed Character
+                ; subtract 1 from bytes read if found
+                ;*******************************************************
+                cmp     byte ptr [rsi+rbx],LF                   ;Is the last character a Line Feed character?
+                jne     CheckForCR                              ;no...then check to see if it is Carriage Return
+                dec     bytesRead                               ;yes..then subtract one from input length
+                dec     rbx                                     ;......and point the previous character
+
+                ;*******************************************************
+                ; Check for Carriage Return Character
+                ; skip it if found
+                ;*******************************************************
+CheckForCR:     cmp     byte ptr [rsi+rbx],CR                   ;Is the last character a Carriage Return character?
+                jne     BeginCalculations                           ;no...then check to see if password is equal
+                dec     bytesRead								;yes..then subtract one from input length
+
+
+				;*********************************************************
+				;Check if valid entry number, 0-9, !, */+- else
+				;jump to invalidEntry
+				;*********************************************************
+				mov r10, offset expressionBuffer
+				mov r15, offset expressionBuffer		;hold the starting address of expression buffer
+				mov r14, offset Total
+				mov ecx, bytesRead
+				xor r8, r8
+
+				jmp ValidLoop
+				
+				DecrementMathSigns:
+				
+				dec rcx		;Decrement the counter when you get to a mathmaticalsymbol
+
+
+				ValidLoop:		;DONE
+							
+							cmp cl, NULL
+							je	BeginTheGame
+				
+							movzx rax, byte ptr [r15+r8*TYPE expressionBuffer] ;Mov the value into the register and compare it to see the 
+																			  ;input is valid
+
+							cmp rax, PLUS
+							je DecrementMathSigns
+							cmp rax, MINUS
+							je DecrementMathSigns
+							cmp rax, MULTIPLY
+							je DecrementMathSigns
+							cmp rax, Divide
+							je DecrementMathSigns
+							cmp rax, EXCLAMATION
+							je DecrementMathSigns
+							cmp rax, ZERO
+							jl InvalidEntry
+							cmp rax, NINE
+							jg InvalidEntry
+							
+							inc r8
+							loop ValidLoop
+
+				;*******************************************************
+				; Do mathmatical calculations
+				;*******************************************************
+
+BeginTheGame:		;R10 has the offset to the expression buffer  
+					
+					xor r8, r8
+
+DecisionsForJump:	;Jump here so index does not get reset
+
+					
+
+
+					movzx rax, byte ptr [r15 +r8*TYPE expressionBuffer] ;Place the byte into a register for comparison
+					cmp rax, PLUS
+					je Addition_Label
+					cmp rax, MINUS
+					je Subtraction_Label
+					cmp rax, MULTIPLY
+					je Multiplication_Label
+					cmp rax, Divide
+					je Division_Label
+					cmp rax, EXCLAMATION
+					je PushToStack
+					cmp r8d, bytesRead
+				    je PopFromStack
+					inc rcx								;Determine how many bytes to move to the register
+					cmp rcx, MAX_NUMBER					;If greater then 99,999 jump to invalid statement
+					je	InvalidEntry
+					inc r8								;Increment index to get to the next byte
+					jmp DecisionsForJump					;Unconditional jump to beginning of game label Work on this later
+
+Addition_Label:		
+				
+				pop rax
+				pop rbx
+				add rbx, rax
+				push rbx
+				inc r8
+				inc r10
+				jmp DecisionsForJump
+
+Subtraction_Label:
+	
+				pop rax
+				pop rbx
+				sub rbx, rax
+				push rbx
+				inc r8
+				inc r10
+				jmp DecisionsForJump
+
+Multiplication_Label:
+
+				pop rax
+				pop rbx
+				mul rbx
+				push rax
+				inc r8
+				inc r10
+				jmp DecisionsForJump
+Division_Label:
+
+				pop rbx
+				pop rax
+
+				cmp rax, NULL
+				je	InvalidEntry
+				cmp rbx, NULL
+				je InvalidEntry
+				div rbx
+				push rax
+				inc r8
+				inc r10
+				jmp DecisionsForJump
+
+PushToStack:		
+					xor r12, r12
+					
+					PushLoop:
+					dec rcx												;Lower because starts 10^0
+					movzx  rax, byte ptr [r10]						   ;Move the byte into a register
+					sub	   rax, THIRTY								   ;Begin Conversion  from ascii to decimal
+
+					
+					
+					movzx  r11, byte ptr cl							   ;Determine how many time to square a number
+					cmp	   r11, NULL								   
+					je	   PushingLabel
+
+
+					SquareANumberLoop:
+		
+					shl    rax, 4
+					
+					dec		r11											;If the power is zero jump out of the loop
+					cmp		r11, NULL
+					jne		SquareANumberLoop
+
+					PushingLabel:
+		
+					add		r12, rax					;Mov the number into the register
+
+					inc		r10							;GO to the next byte
+
+					cmp		rcx, NULL
+					jne		PushLoop
+
+					jmp		DecimalToHex
+
+					inc     r10							;GO past the !
+					inc		r8							;go past the !
+
+					push r12							;Push the number to the stack
+				
+					jmp DecisionsForJump
+					
+					
+					
+DecimalToHex:	
+					mov r13, 16h
+					DecimalToHexLoop:
+					cmp r12, r13
+					jl FinalHex
+					mov ax, r12w
+					sub rax, r13
+
+
+					jmp DecimalToHexLoop
+					FinalHex:
+					
+
+					
+PopFromStack:	
+xor r13, r13
+
+pop rax
+TEST rax, rax
+rol rax,60
+add cl, THIRTY
+shl rcx, 4
+
+BeginCalculations:
+
+InvalidEntry: 
+				;*******************************************************
+                ;If we get here that means the password input by the
+                ;user doesn't match the password, so setup parameters
+                ;for WriteConsoleA to display invalid password message
+                ;*******************************************************
+                mov     rdx,OFFSET InvalidMsg               ;message to display
+                mov     r8,LENGTHOF InvalidMsg             ;number of characters to display
+                ;*******************************************************
+ConvertToASCII:
+
+OutPut:
+
+                ;Terminate the program
+                xor     ecx,ecx                                 ;Return 0 (Success) to the caller
+                call    ExitProcess                             ;Windows API to terminate process
+
+Main            endp
+
+END
