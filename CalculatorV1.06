@@ -1,0 +1,404 @@
+;************************************************************
+;  David Lam
+;  CS M30 ESpring 2018
+;  Program Assignment #3
+;  Using Visual studios 2017
+;  
+;  Program Objective
+;  Learning how to use stack and arithmetic instructions
+;
+;  Program Assignment
+;  Write an assembly language program to evaluate a Postfix expression.
+;
+;  Your program should do the following tasks:
+;
+;  1)	Prompt the user to enter a valid Postfix expression.
+;
+;  2)	Use the ReadConsoleA Windows API function to allow the user to input a Postfix expression. 
+;  Maximum number of characters ReadConsole can return is 80.
+;
+;  3)	Evaluate the Postfix expression using stack and arithmetic instructions.
+;  All arithmetic instructions should produce a 64-bit signed integer value. 
+;
+;  NOTE:  The program should do integer division, 
+;  so you don't need to worry about remainders for division operations.
+;  4)	Display the result of the Postfix expression on the screen in decimal. 
+;  Your program should display a negative sign if your result is negative.
+;  Your program should test for overflow and division by zero and display an appropriate error message for both cases. 
+;  How to evaluate a Postfix Expression
+;  1)	If the element is a number push it onto the stack. 
+;  (No negative numbers.  Numbers are terminated with a !. No numbers greater than 99,999)
+;  2)	If the element is an operator (+ - * /) pop the two values off the stack, perform the operation, and push the result.
+;  3)	When you reach the end of the Postfix expression, pop the result off the stack,
+;  display it's decimal equivalent on the screen in ASCII.
+;  An Example of a Postfix Expression:  99!57!*2!4!-/
+;  Equivalent infix Expression:  (99*57)/(2-4))
+;************************************************************                 
+				include win64api.inc
+
+MAX_EXP_SIZE    equ     80
+CR              equ     0Dh
+LF              equ     0Ah
+NULL            equ     0
+
+                .DATA
+bytesRead       dword   0                                       ;number of characters read
+bytesWritten    dword   0                                       ;number of characters wrote to console
+hStdInput       qword   0                                       ;handle to the standard input device
+hStdOutput      qword   0                                       ;handle to the standard output device
+
+expressionBuffer byte    MAX_EXP_SIZE dup (0)                    ;buffer to hold expression entered by user
+TotalBuffer		 qword   10 dup(0)								;Hold the total
+
+
+EnterInputMsg   byte    "Please Enter A Valid Expression: "
+InvalidMsg		byte    "Invalid Entry", LF
+OverFlowMsg     byte	"Overflow!", LF
+DivisionByZeroMsg byte  "Division By Zero!", LF
+
+
+;**********************************************************
+;Equates for mathmatical signs
+;**********************************************************
+PLUS			equ		2Bh
+MINUS			equ     2Dh
+DIVIDE			equ		2Fh
+MULTIPLY		equ		2Ah
+EXCLAMATION     equ		21h
+ZERO			equ		30h
+NINE			equ		39h
+;*********************************************************
+;Equates for numbers needed
+;*********************************************************
+MAX_NUMBER		equ		06h
+THIRTY			equ		30h
+TEN				equ		0Ah
+ISNEGATIVE		equ     01h
+
+                .CODE
+
+Main            Proc
+
+                sub     rsp,40                                  ;shadow memory and align stack
+                                                                ;32 bytes for shadow memory
+                                                                ; 8 bytes to align stack
+
+                ;*******************************************************
+                ; Get Handle To Standard Output Device
+                ; In order to write to the console we need to get a 
+                ; handle to the standard output device
+                ;*******************************************************
+                mov     ecx,STD_OUTPUT_HANDLE                   ;pass handle to get in ecx
+                call    GetStdHandle                            ;call Windows API function
+                mov     hStdOutput,rax                          ;Save the handle to the windows console
+
+                ;*******************************************************
+                ; Get Handle To Standard Input Device
+                ; In order to read from standard input device
+                ; we need to get a handle to the standard input device
+                ;*******************************************************
+                mov     ecx,STD_INPUT_HANDLE                    ;pass handle to get in ecx
+                call    GetStdHandle                            ;call Windows API function
+                mov     hStdInput,rax                           ;Save the handle to the windows console
+
+                ;*******************************************************
+                ; Prompt User to enter their Postfix Expression
+                ;*******************************************************
+               
+                mov     rcx,hStdOutput                          ;
+                mov     rdx,OFFSET EnterInputMsg                  ;message to display
+                mov     r8,LENGTHOF EnterInputMsg                 ;number of characters to display
+                mov     r9,OFFSET EnterInputMsg                  ;number of characters displayed will be return here
+                xor     rax, rax                                ;last parameter is 0
+                mov     [rsp+32], rax                           ;parameters > 4 are passed on the stack
+                call    WriteConsoleA
+
+
+                ;*******************************************************
+                ; Get user input for Expression
+                ;*******************************************************
+                xor     rax,rax                                 ;last parameter is NULL
+                mov     [rsp+32],rax                            ;parameters > 4 are passed on the stack
+                mov     r9,OFFSET bytesRead                     ;Number of characters read will be returned here
+                mov     r8d,SIZEOF expressionBuffer               ;Maximum number of bytes to read
+                mov     rdx,OFFSET expressionBuffer               ;Address of where to store input data
+                mov     rcx,hStdInput                           ;Handle standard input device
+                call    ReadConsoleA
+
+				 ;*******************************************************
+                ; Sanity check, bytes read should never be zero
+                ; unless input parameters to ReadConsole were wrong 
+                ;*******************************************************
+                cmp     bytesRead,NULL                          ;is bytes read equal to Zero
+                je      InvalidEntry
+
+
+                ;*******************************************************
+                ; Setup [RSI + RBX] to point to last character entered
+                ;*******************************************************
+                mov     rsi,offset expressionBuffer             ;rsi is a pointer to expressionBuffer
+                mov     ebx,bytesRead                           ;rbx is index into expressionBuffer
+                dec     rbx                                     ;subtract one since array is zero based
+
+                ;*******************************************************
+                ; Check for Line Feed Character
+                ; subtract 1 from bytes read if found
+                ;*******************************************************
+                cmp     byte ptr [rsi+rbx],LF                   ;Is the last character a Line Feed character?
+                jne     CheckForCR                              ;no...then check to see if it is Carriage Return
+                dec     bytesRead                               ;yes..then subtract one from input length
+                dec     rbx                                     ;......and point the previous character
+
+                ;*******************************************************
+                ; Check for Carriage Return Character
+                ; skip it if found
+                ;*******************************************************
+CheckForCR:     cmp     byte ptr [rsi+rbx],CR                   ;Is the last character a Carriage Return character?
+                jne     BeginTheGame                            ;no...then check to see if password is equal
+                dec     bytesRead								;yes..then subtract one from input length
+
+
+				;*********************************************************
+				;Check if valid entry number, 0-9, !, */+- else
+				;jump to invalidEntry
+				;*********************************************************
+				mov r10, offset expressionBuffer		;Holds the address of expression buffer
+				mov r15, offset expressionBuffer		;hold the starting address of expression buffer
+				mov r14, offset TotalBuffer				;Hold the address of the buffer
+
+				
+
+;*******************************************************
+;Begin to evaluate the expression buffer
+;Make jumps based on ascii values
+;*******************************************************
+
+BeginTheGame:		
+					
+					xor r8, r8							;Used to know the program get to the end of the buffer and outputs out 
+														;the total
+					xor rcx, rcx						;Used to determine if a number entered is bigger then 99,999
+														;Also used to determine if there are more numbers that needed to be 
+														;multiplied by 10
+
+DecisionsForJump:	
+
+					movzx rax, byte ptr [r15 +r8*TYPE expressionBuffer] ;Place the byte into a register for comparison
+					cmp rax, PLUS
+					je Addition_Label
+					cmp rax, MINUS
+					je Subtraction_Label
+					cmp rax, MULTIPLY
+					je Multiplication_Label
+					cmp rax, Divide
+					je Division_Label
+					cmp rax, EXCLAMATION
+					je PushToStack						
+					cmp r8d, bytesRead					;Knows when you reach the end of the buffer
+				    je PopFromStack						;When you reach the end of the buffer begin to convert and output the total
+					inc rcx								;Determine how many bytes to move to the register
+					cmp rcx, MAX_NUMBER					;If greater then 99,999 jump to invalid statement
+					je	InvalidEntry
+					cmp rax, ZERO						;Check for a invalid number entry
+					jl InvalidEntry
+					cmp rax, NINE						;Check for a invalid number entry
+					jg InvalidEntry
+					inc r8								;Increment index to get to the next byte
+					jmp DecisionsForJump				;Unconditional jump to beginning of game label is a default for this statement
+
+Addition_Label:		
+				
+					pop rax								;Pop a value off stack				
+					pop rbx								;Pop second value off stack
+					add rbx, rax						;Add the two values together
+					jo	OverFlowLabel					;If there is an overflow go to this label
+					push rbx							;Push the total into the stack
+					inc r8								;Move pass the aremathic sign
+					inc r10								;Move pass the aremathic sign
+					jmp DecisionsForJump
+
+Subtraction_Label:
+	
+					pop rax								;Pop a value off stack				
+					pop rbx								;Pop second value off stack
+					sub rbx, rax						;Subtract the two values
+					jo	OverFlowLabel					;If there is an overflow go to this label
+					push rbx							;Push the total into the stack
+					inc r8								;Move pass the aremathic sign
+					inc r10								;Move pass the aremathic sign
+					jmp DecisionsForJump
+
+Multiplication_Label:;Work on negative
+					xor rcx, rcx
+					pop rax								;Pop a value off stack				
+					pop rbx								;Pop second value off stack
+
+					AND rax, rax						;Test the signed but to detemine if the number is negative or not
+					jns SecondRegisterMUL
+					inc rcx
+					neg rax								;Is negative use 2's compliment
+					SecondRegisterMUL:
+					AND rbx, rbx						;Test the signed but to detemine if the number is negative or not
+					jns Normal_Multipication
+					inc rcx
+					neg rbx								;Is negative use 2's compliment
+
+
+					Normal_Multipication:
+					mul rbx								;Multiply the values together
+					jo	OverFlowLabel					;If there is an overflow go to this label
+					cmp rcx, ISNEGATIVE
+					jne NotNegativeMUL
+					neg rax
+					NotNegativeMUL:
+
+					push rax							;Push the total into the stack
+					inc r8								;Move pass the aremathic sign
+					inc r10								;Move pass the aremathic sign
+					jmp DecisionsForJump
+Division_Label:
+					xor rcx, rcx
+					pop rbx								;Pop Divisor
+					pop rax								;Pop value that is to be divided
+					cmp rax, NULL						;Check if there division by zero
+					je	DivisionByZero
+					cmp rbx, NULL						;Check if there division by zero
+					je DivisionByZero
+
+					TEST rax, rax						;Test the signed but to detemine if the number is negative or not
+					jns EvaluateSecondRegister
+					inc rcx
+					neg rax								;Is negative use 2's compliment
+					EvaluateSecondRegister:
+					TEST rbx, rbx						;Test the signed but to detemine if the number is negative or not
+					jns NormalDivision
+					inc rcx
+					neg rbx								;Is negative use 2's compliment
+
+					NormalDivision:
+					div rbx								;Divided the 2 values
+					jo	OverFlowLabel					;If there is an overflow go to this label
+					cmp rcx, ISNEGATIVE
+					jne NotNegative
+					neg rax
+					NotNegative:
+					push rax							;Push the total into the stack
+					inc r8								;Move pass the aremathic sign
+					inc r10								;Move pass the aremathic sign
+					jmp DecisionsForJump
+
+PushToStack:		
+					xor r12, r12									;Holds the converted value
+					
+					PushLoop:
+					dec	   rcx										;Decrement because starts 10^0
+					movzx  rax, byte ptr [r10]						;Move the ascii number into the register
+					sub	   rax, THIRTY								;Begin Conversion  from ascii to decimal
+					movzx  r11, byte ptr cl							;Determine how many time to multiply a number by 0Ah
+					cmp	   r11, NULL								;If the number is a single digit ascii value 
+																	;do not multiply by 0Ah and just add it to the total
+					je	   PushingLabel
+
+					SquareANumberLoop:
+		
+					mov   rbx, TEN									;Mov into register because program can't muliply by immediate
+					mul	  rbx										;Multiply by 0Ah to covert from decimal to hex
+					dec	  r11										;If the power is zero jump out of the loop
+					cmp	  r11, NULL									;Determine how many times to multiply by 0Ah
+					jne	  SquareANumberLoop
+
+					PushingLabel:
+		
+					add		r12, rax								;Mov the number into the register
+					inc		r10										;Go to the next byte in the expressionBuffer
+					cmp		rcx, NULL								;determine if there are more numbers that needed to be 
+																	;multiplied by 10
+					jne		PushLoop
+
+					inc     r10										;Go past the ! in the expression buffer
+					inc		r8										;Go past the ! in the expression buffer
+
+					push r12										;Push the number into the stack
+				
+					jmp DecisionsForJump
+					
+PopFromStack:	
+					xor r8, r8						;Needs to be zero for indexing
+					pop rax							;Pop the total out to rbx and begin conversion to ascii
+					mov rbx, TEN					;Put 0Ah into rbx and use it for division to put the remainder in rdx
+					TEST rax, rax					;Test the signed but to detemine if the number is negative or not
+					jns ToAsciiJump 
+					neg rax							;Is negative use 2's compliment
+					mov dx, MINUS
+					mov [r14 +r8*TYPE dl],	dl		;Move a negative sign into the buffer because negative
+					inc r8
+					ToAsciiJump:
+					xor rdx, rdx					;Set up rdx for division or there will be an error
+					div rbx							;divide by 10 and puts remainder in rdx
+					add rdx, THIRTY					;convert rdx to ascii
+					inc rcx							;rcx used to know how many byte to push
+					push dx							;push the word into a stack to convert indians
+					TEST rax, rax					;When rax is empty we know when to get out of loop
+					jnz ToAsciiJump
+					
+					PutIntoTotal:
+
+					pop dx							;Pop the byte in the stack to put them in our total buffer
+					mov [r14 +r8*TYPE dl],	dl		;puts the value into the buffer
+
+					inc r8							;Increment the index
+					
+					loop PutIntoTotal
+
+					mov     rdx,OFFSET TotalBuffer  ;message to display
+					jmp OutPut						;Output out the total
+
+					
+OverFlowLabel: 
+				;*******************************************************
+                ;If we get here that means the overflow flag has been set
+                ;*******************************************************
+                mov     rdx,OFFSET OverFlowMsg       ;message to display
+                mov     r8,LENGTHOF OverFlowMsg     ;number of characters to display
+				jmp     OutPut
+                ;*******************************************************
+
+
+
+DivisionByZero: 
+				;*******************************************************
+                ;If we get here that means there is division by zero
+                ;*******************************************************
+                mov     rdx,OFFSET DivisionByZeroMsg       ;message to display
+                mov     r8,LENGTHOF DivisionByZeroMsg      ;number of characters to display
+				jmp     OutPut
+                ;*******************************************************
+
+InvalidEntry: 
+				;*******************************************************
+                ;If we get here that means there is an invalid entry
+				;Such as a number bigger then 99,999 or an invalid entry
+                ;*******************************************************
+                mov     rdx,OFFSET InvalidMsg               ;message to display
+                mov     r8,LENGTHOF InvalidMsg             ;number of characters to display
+                ;*******************************************************
+
+				;*******************************************************
+				;Out put the total or error message
+				;*******************************************************
+OutPut:
+				
+				
+				mov     rcx,hStdOutput                          ;1st parameter - handle of where to send message
+                mov     r9,OFFSET BytesWritten                  ;4th parameter - pointer where bytes written will be stored
+                xor     rax,rax                                 ;last parameter is 0
+                mov     [rsp+32],rax                            ;parameters > 4 are passed on the stack
+                call    WriteConsoleA
+                ;Terminate the program
+
+                xor     ecx,ecx                                 ;Return 0 (Success) to the caller
+                call    ExitProcess                             ;Windows API to terminate process
+
+Main            endp
+
+END
