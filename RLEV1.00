@@ -1,0 +1,61 @@
+
+
+
+						include win64api.inc
+
+FIRSTBITSET	equ		80h		;Used to test if the first bit is set
+ONE			equ		01h		;Repeat count is one
+MAXREPEATCOUNT equ  7Fh		;Max binary value for repeat counter
+
+                .CODE
+
+RLE_Encode  proc    public
+
+xor rax, rax							;Rax is eventually going to returned the size in bytes to the output
+mov r13, FIRSTBITSET					;Max binary value for repeat counter
+xor	r12, r12							;Used to compare with the length of the buffer to determine when to leave loop
+ResetRepeatCount:
+movzx rbx, byte ptr [rcx]				;Moves a the value thats going to be compared into the register
+xor r11, r11							;Repeat counter
+
+RepeatValue:
+inc r12									;Contains the max size for one bit encoding
+inc r11									;Increment the repeat counter to determine the number of times the value repeats
+inc rcx									;Increments the index
+
+cmp r12, MAXREPEATCOUNT					;Has the max binary value
+je PutIntoOutput
+
+cmp	bl, byte ptr [rcx]					;Compeare the values if they are the same then increase the repeat counter
+je RepeatValue
+
+
+PutIntoOutput:
+mov byte ptr [r8], r11b
+inc rax
+cmp r11, ONE							;See if the counter is greater then one if so set MSB
+je	NoRepeat
+or byte ptr[r8], r13b					;Set the bit that says that there is a repeat counter 
+NoRepeat:
+inc r8									;Move to the next byte in r8
+mov byte ptr[r8], bl					;Move the value into the buffer
+inc rax
+inc r8
+cmp r12, rdx							;Determine if we reached the end of the file
+je Return
+jmp ResetRepeatCount					;Continue  to go through the file
+
+Return:
+		
+ret
+
+RLE_Encode  endp
+
+
+RLE_Decode  proc	public
+
+ret
+RLE_Decode  endp
+
+
+END
