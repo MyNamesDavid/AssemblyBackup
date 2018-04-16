@@ -1,0 +1,662 @@
+  include Win64API.inc
+
+;*************************************************************************************************************
+                    .DATA
+;*************************************************************************************************************
+
+;*****************************************
+; EQUATES
+;*****************************************
+CAPACITY            EQU             10
+ADD_CONSUMERS_THRESHOLD  EQU        8
+QUEUE_FRONT         EQU             -1
+SHADOW_MEM          EQU             32
+HEAP_ZERO_MEMORY    EQU             8
+LF                  EQU             0Ah
+EXIT_PROGRAM        EQU             'q'
+PAUSE_PRODUCER      EQU             'p'
+
+MAX_CONSUMERS		EQU				200h
+
+
+
+TEN_DECIMAL         EQU             10
+
+;*****************************************
+; Structures
+;*****************************************
+Queue               struct
+   queue_array      qword           CAPACITY dup (0)
+   head             qword           0
+   tail             qword           QUEUE_FRONT
+   elements         qword           0
+Queue               ends
+
+ProcessStruct       struct
+   processTime      byte            0
+   processId        qword           0
+ProcessStruct       ends
+
+;*****************************************
+; Global Variables
+;*****************************************
+
+myQueue             Queue           <>
+
+currentProcessId    qword           1               ;counter to create unique process ids
+consumerThreads     qword           0               ;number of consumer Threads running
+hStdOutput          qword           0
+hStdInput           qword           0
+
+hHeap               qword           0               ;handle to the heap
+
+processIdString     byte            LF,"Process ID: "
+processTimeString   byte            " Process Time: "
+threadIdString      byte            " Thread ID: "
+NoConsumersString   byte            LF,"No Consumer Threads are running",LF
+
+ProducerPause       byte            0
+
+lock_var			qword			0
+SharedMem			QWORD			0
+mutex				qword			0
+
+;*************************************************************************************************************
+                    .CODE
+;*************************************************************************************************************
+
+Main                Proc
+
+                    ;*****************************************
+                    ; Get handle to the standard output
+                    ;*****************************************
+                    mov     ecx,STD_OUTPUT_HANDLE
+                    call    GetStandardHandle
+                    mov     hStdOutput,rax
+
+                    ;*****************************************
+                    ; Get handle to the standard input
+                    ;*****************************************
+                    mov     ecx,STD_INPUT_HANDLE
+                    call    GetStandardHandle
+                    mov     hStdInput,rax
+
+                    ;*****************************************
+                    ; Get handle to the standard input
+                    ;*****************************************
+                    mov     rcx,hStdInput
+                    mov     rdx,ENABLE_NOTHING_INPUT          
+                    call    SetConsoleMode
+
+                    ;*****************************************
+                    ; Create Producer thread
+                    ;*****************************************
+                    call    CreateProducer              ;create the one and only producer thread
+
+                    ;*****************************************
+                    ; Create User Interface thread
+                    ;*****************************************
+                    call    CreateUI                    ;create the one and only user interface thread
+                   
+                    ;*********************************************************************************
+                    ; Check to see if we need to create a Consumer thread.
+                    ; A consumer thread is created if
+                    ;
+                    ; 1) The number of items in the queue is greater than the QUEUE_THRESHOLD
+                    ;
+                    ; 2) There is at least 1 item in the queue and there are no consumer threads
+                    ;
+                    ;*********************************************************************************
+CheckQueue:         cmp     myQueue.elements,ADD_CONSUMERS_THRESHOLD        ;Do we need to create more consumers?
+                    jnc     NewConsumer                 ;yes...create a new consumer thread
+                    
+                    cmp     consumerThreads,0           ;Are there consumer threads running?
+                    jne     DoOtherWork                 ;yes...then we can do other work and check back later
+
+                    lea     rdx,NoConsumersString       ;address of characters to display
+                    mov     r8d,LENGTHOF NoConsumersString ;number of characters to display
+                    call    DisplayString                ;display string to console
+
+                    cmp     myQueue.elements,0          ;Is the queue empty?
+                    je      DoOtherWork                 ;yes...then we can do other work
+                                                        ;no....then we need to create a consumer
+
+NewConsumer:        call   CreateConsumer               ;creates a consumer thread
+                                              
+DoOtherWork:        jmp     CheckQueue                  ;no....continue processing
+
+                    ;Terminate Program
+Terminate:          mov     ecx,0                       ;return zero to the caller
+                    call    ExitProcess                 ;Windows API - terminates the program
+
+                    ret
+Main                endp
+
+;*************************************************************************
+; CreateUI - creates a user interface thread
+;
+; INPUTS:
+;   NONE
+;
+; OUTPUTS:
+;   NONE
+;
+; ALL GENERAL REGISTERS ARE PRESERVED
+;
+;*************************************************************************
+CreateUI            proc 
+
+                    sub     rbp,SHADOW_MEM + TYPE QWORD * 2
+
+                    xor     rcx,rcx                                                   ;1st parameter (rcx) - pointer to Security Attributes
+                    xor     rdx,rdx                                                   ;2nd parameter (edx) - stack size (use default stack size)
+                    mov     r8,OFFSET UserInterface                                   ;3rd parameter (r8)  - Address of Thread Procedure
+                    xor     r9,r9                                                     ;4th parameter (r9)  - Address of variable to be passed to the thread proc
+                    mov     [rsp+SHADOW_MEM],rdx                                      ;5th parameter is passed on the stack - The flags that control the creation of the thread.
+                    mov     qword ptr [rsp+SHADOW_MEM+QWORD],0                        ;6th parameter is passed on the stack - A pointer to a variable that receives the thread id.
+                                                                                      ;If this parameter is NULL, the thread id is not returned.
+                    call    CreateThread                                              ;create the thread
+
+Finish:             add     rbp,SHADOW_MEM + TYPE QWORD * 2
+                    ret
+
+CreateUI            endp
+
+;*************************************************************************
+; UserInterface - User interface thread. Gets keystrokes from user and
+;                 acts on them
+;
+; INPUTS:
+;
+;   NONE
+;
+; OUTPUTS:
+;
+;   NONE
+;
+; NO REGISTERS ARE PRESERVED
+;
+;*************************************************************************
+UserInterface       proc
+
+CheckForInput:      call    GetCharacter
+                    cmp     al,PAUSE_PRODUCER           ;Did the user press the pause key
+                    jne     CheckForExit                ;no...check if they pressed the exit key
+                    not     ProducerPause               ;yes..then pause/un-pause producer (toggle)
+                    jmp     CheckForInput               ;continue processing
+
+CheckForExit:       cmp     al,EXIT_PROGRAM             ;did the user press the exit key
+                    je      Terminate                   ;yes...so terminate
+                    jmp     CheckForInput               ;no....continue processing
+                    
+                    ;Terminate Program
+Terminate:          mov     ecx,0                       ;return zero to the caller
+                    call    ExitProcess                 ;Windows API - terminates the program
+
+Finish:             ret
+
+UserInterface       endp
+
+
+;*************************************************************************
+; CreateProducer - creates the producer thread
+;
+; INPUTS:
+;   NONE
+;
+; OUTPUTS:
+;   NONE
+;
+; ALL GENERAL REGISTERS ARE PRESERVED
+;
+;*************************************************************************
+CreateProducer      proc uses rax rbx rcx rdx rdi rsi rbp r8 r9 r10 r11 r12 r13 r14 r15 
+
+                    sub     rsp,SHADOW_MEM + TYPE QWORD * 2
+
+                    xor     rcx,rcx                                                   ;1st parameter (rcx) - pointer to Security Attributes
+                    xor     rdx,rdx                                                   ;2nd parameter (edx) - stack size (use default stack size)
+                    mov     r8,OFFSET Producer                                        ;3rd parameter (r8)  - Address of Thread Procedure
+                    xor     r9,r9                                                     ;4th parameter (r9)  - Address of variable to be passed to the thread proc
+                    mov     [rsp+SHADOW_MEM],rdx                                      ;5th parameter is passed on the stack - The flags that control the creation of the thread.
+                    mov     qword ptr [rsp+SHADOW_MEM+QWORD],0                        ;6th parameter is passed on the stack - A pointer to a variable that receives the thread id.
+                                                                                      ;If this parameter is NULL, the thread id is not returned.
+                    call    CreateThread                                              ;create the thread
+
+                    add     rsp,SHADOW_MEM + + TYPE QWORD * 2
+                    ret
+
+CreateProducer      endp
+
+;*************************************************************************
+; Producer - adds ProcessStruct's to the queue.
+;
+; INPUTS:
+;
+;   NONE
+;
+; OUTPUTS:
+;
+;   NONE
+;
+; NO REGISTERS ARE PRESERVED
+;
+;*************************************************************************
+Producer            proc
+
+                    sub     rsp,SHADOW_MEM 
+
+                    ;*************************************************
+                    ;Get Handle to the default heap for this process
+                    ;*************************************************
+                    call    GetProcessHeap              ;Windows API call
+                    mov     hHeap,rax                   ;store handle to heap
+
+L1:
+                    ;*************************************************
+                    ;Allocate memory from the heap
+                    ;*************************************************
+                    mov     r8,TYPE ProcessStruct       ;bytes to allocate
+                    mov     rdx,HEAP_ZERO_MEMORY        ;clear memory allocated from the heap
+                    mov     rcx,hHeap                   ;handle to the heap
+                    call    HeapAlloc                   ;Windows API call
+                    push    rax                         ;save pointer to allocated memory
+
+                    ;*************************************************
+                    ;Pseudo random number generator
+                    ;*************************************************
+                    rdtsc                               ;get current timestamp (64 bit value returned in EDX:EAX)                                        
+                    xchg    eax,ecx                     ;place least signicant dword of timestamp in ecx
+                    pop     rax                         ;restore pointer to allocated memory
+                    mov     byte ptr[rax],cl            ;store the random number in the ProcessTime field in the allocated memory for the ProcessStruct
+                    mov     rdx,CurrentProcessId        ;get current process Id
+                    mov     [rax + TYPE ProcessStruct.processTime],rdx  ;store the process id in the ProcessId field in the allocated memory for the ProcessStruct
+                    inc     CurrentProcessId            ;update the CurrentProcessId 
+
+TryAgain:
+                    call    Enqueue                     ;store the pointer to the allocated ProcessStruct in the queue
+                    jc      TryAgain                    ;if Enque call failed try again
+
+ProducerPaused:     cmp     ProducerPause,0             ;check to see if the producer was paused
+                    jnz     ProducerPaused
+                    jmp     L1                          ;create another Process
+
+                    add     rsp,SHADOW_MEM
+
+                    ret
+
+Producer            endp
+
+;*************************************************************************
+; CreateConsumer - creates a consumer thread
+;
+; INPUTS:
+;   NONE
+;
+; OUTPUTS:
+;   NONE
+;
+; ALL GENERAL REGISTERS ARE PRESERVED
+;
+;*************************************************************************
+CreateConsumer      proc 
+
+                    sub     rsp,SHADOW_MEM + TYPE QWORD * 2
+
+                    xor     rcx,rcx                                                   ;1st parameter (rcx) - pointer to Security Attributes
+                    xor     rdx,rdx                                                   ;2nd parameter (edx) - stack size (use default stack size)
+                    mov     r8,OFFSET Consumer                                        ;3rd parameter (r8)  - Address of Thread Procedure
+                    xor     r9,r9                                                     ;4th parameter (r9)  - Address of variable to be passed to the thread proc
+                    mov     [rsp+SHADOW_MEM],rdx                                      ;5th parameter is passed on the stack - The flags that control the creation of the thread.
+                    mov     qword ptr [rsp+SHADOW_MEM+QWORD],0                        ;6th parameter is passed on the stack - A pointer to a variable that receives the thread id.
+                                                                                      ;If this parameter is NULL, the thread id is not returned.
+                    call    CreateThread                                              ;create the thread
+                    or      rax,rax                                                   ;was CreateThread successful? RAX <> 0 
+                    jz      Finish                                                    ;CreateThread failed so exit
+
+                    inc     consumerThreads
+
+Finish:             add     rsp,SHADOW_MEM + TYPE QWORD * 2
+                    ret
+
+CreateConsumer      endp
+
+;*************************************************************************
+; Consumer - removes ProcessStruct's from the queue.  If there are 
+;            no more processes left in the queue the thread will terminate
+;
+; INPUTS:
+;
+;   NONE
+;
+; OUTPUTS:
+;
+;   NONE
+;
+; NO REGISTERS ARE PRESERVED
+;
+;*************************************************************************
+Consumer            proc
+
+NextProcess:
+                    call    Dequeue                     ;get an element from the queue
+                    jc      QueueEmpty                  ;if Dequeue call failed then there is nothing in the queue so kill thread
+
+                    call    DisplayProcessing           ;Display the Process Id and Thread ID
+
+                    movzx   ecx,byte ptr[rax]           ;processTime in ECX
+                    call    sleep                       ;sleep the processTime
+
+                    mov     r8,rax                      ;pointer to memory to free
+                    mov     rdx,HEAP_ZERO_MEMORY        ;clear memory allocated from the heap
+                    mov     rcx,hHeap                   ;handle to the heap
+                    call    HeapFree
+
+                    jmp     NextProcess                 ;get next element from the queue
+
+QueueEmpty:         dec     consumerThreads             ;remove this thread from the consumer threads count since it is terminating
+                    xor     rcx,rcx                     ;return value from thread
+                    call    ExitThread                  ;terminate thread
+                    
+                    ret                                 ;we should never get here
+
+Consumer            endp
+
+
+;*************************************************************************
+; Dequeue - removes a ProcessStruct from the beginning of the queue
+;
+; INPUTS:
+;
+;   NONE
+;
+; OUTPUTS:
+;
+;   RAX - address of the ProcessStruct removed from the queue
+;
+;   Carry Flag - cleared if dequeue was successful, otherwise it is set
+;
+; ALL OTHER GENERAL REGISTERS ARE PRESERVED
+;
+;*************************************************************************
+Dequeue             proc    uses rbx rsi
+                    local   zero:qword
+
+					
+
+                    cmp     myQueue.elements,1          ;check to see if the queue is empty
+                    jb      QueueEmpty                  ;jump if it is empty
+
+                    lea     rsi,myQueue.queue_array     ;get pointer to queue array
+                    mov     rbx,myQueue.head            ;get the head of the queue
+                    mov     rax,[rsi+rbx*TYPE myQueue.queue_array] ;get the element from the queue - Element is a pointer to a ProcessStruct
+                    dec     myQueue.elements            ;decrement the number of elements in the queue
+                    inc     rbx                         ;update the head of the queue to point to the next element in the queue
+                    cmp     rbx,CAPACITY                ;check to see if the head is at the end of the array
+                    mov     zero,0                      ;initialize
+                    cmove   rbx,zero                    ;if head is at the end of the array, set the head to zero (beginning of the array) - wrap around
+                    mov     myQueue.head,rbx            ;save the new head of the array
+                    clc                                 ;let caller know that call succeeded
+                    jmp     Finish                      ;exit
+
+QueueEmpty:         stc                                 ;let caller know that call failed
+
+Finish:             ret
+Dequeue             endp
+
+;*************************************************************************
+; Enqueue - places the ProcessStruct in the queue
+;
+; INPUTS:
+;
+;   RAX - address of the ProcessStruct to store in the queue
+;
+; OUTPUTS:
+;
+;   Carry Flag - cleared if added to the queue, otherwise it is set
+;
+; ALL OTHER GENERAL REGISTERS ARE PRESERVED
+;
+;*************************************************************************
+Enqueue             proc    uses rbx rdi
+                    local   queue_begin:qword
+					push rax
+					spin_lock:
+                    mov rcx,1
+
+spin_lock_retry:
+                    xor rax,rax
+                    lock cmpxchg lock_var,rcx
+                    jnz spin_lock_retry
+
+					pop rax
+                    ;******************************************************
+                    ;Check to see if the queue is full
+                    ;******************************************************
+                    cmp     myQueue.elements,CAPACITY           ;is the queue full?
+                    jnb     QueueFull                           ;yes...so jump
+
+                    ;******************************************************
+                    ;Queue is not full so increment number of elements in 
+                    ;the queue and to see if the queue is full
+                    ;******************************************************
+                    inc     myQueue.elements                    ;increment number of elements in the queue
+                    cmp     myQueue.tail,CAPACITY - 1           ;are we at the end of the queue array?
+                    mov     rbx,myQueue.tail                    ;rbx will be either the tail
+                    mov     queue_begin,QUEUE_FRONT             ;initialize queue_begin
+                    cmove   rbx,queue_begin                     ;OR -1 (queue_begin) based on the cmp above
+
+                    inc     rbx                                 ;rbx = either tail+1 or queue_begin+1 = 0
+                    lea     rdi,myQueue.queue_array             ;address of the queue array
+                    mov     [rdi+rbx*TYPE myQueue.queue_array],rax  ;store the element in the queue
+                    mov     myQueue.tail,rbx                    ;update the queue's tail property
+                    clc                                         ;let caller know procedure was successful
+                    jmp     Finish
+
+QueueFull:          stc                                         ;let caller know there was an error
+spin_Unlock:
+					mov lock_var, 0
+Finish:             ret
+
+Enqueue             endp
+
+;************************************************************************************************************************
+; PrintProcessing - This procedure output the thread id, process id and process time for a process being removed from
+;                   the queue
+;
+; INPUTS:
+;
+;   RAX - address of the ProcessStruct
+;
+; OUTPUTS:
+;
+; ALL OTHER GENERAL REGISTERS ARE PRESERVED
+;
+;************************************************************************************************************************
+DisplayProcessing   proc uses rax rbx rcx rdx rdi
+                    local outputBuffer[20]:byte
+
+				
+
+                    lea     rdx,ProcessIdString                 ;address of characters to display
+                    mov     r8d,LENGTHOF ProcessIdString        ;number of characters to display
+                    call    DisplayString                       ;display string to console
+
+                    mov     r15,rax                             ;save address of the ProcessStruct in R15
+                    add     rax,TYPE ProcessStruct.ProcessTime  ;rax = address of the process id field
+                    mov     rax,[rax]                           ;Process ID in rax
+                    lea     rdi,outputBuffer                    ;address of where to store the ASCII value of RAX
+                    call    UIntToASCII                         ;convert process id to ascii string
+
+                    lea     rdx,outputBuffer                    ;address of characters to display
+                    mov     r8,rax                              ;number of characters to display
+                    call    DisplayString                       ;display string to console
+
+                    ;******************************************
+                    ; Display Process Time
+                    ;******************************************
+                    lea     rdx,ProcessTimeString               ;address of characters to display 
+                    mov     r8d,LENGTHOF ProcessTimeString      ;number of characters to display
+                    call    DisplayString                       ;display string to console
+
+                    movzx   rax,byte ptr [r15]                  ;Process Time in rax
+                    lea     rdi,outputBuffer                    ;address of where to store the ASCII value of RAX
+                    call    UIntToASCII                         ;convert process id to ascii string
+
+                    lea     rdx,outputBuffer                    ;address of characters to display
+                    mov     r8,rax                              ;number of characters to display
+                    call    DisplayString                       ;display string to console
+
+                    ;******************************************
+                    ; Display Thread ID 
+                    ;******************************************
+                    lea     rdx,ThreadIdString                  ;address of characters to display
+                    mov     r8d,LENGTHOF ThreadIdString         ;number of characters to display
+                    call    DisplayString                       ;display string to console
+
+                    call    GetCurrentThreadId                  ;get thread id
+                    lea     rdi,outputBuffer                    ;address of where to store the ASCII value of RAX
+                    call    UIntToASCII                         ;convert process id to ascii string
+
+                    lea     rdx,outputBuffer                    ;address of characters to display
+                    mov     r8,rax                              ;number of characters to display
+                    call    DisplayString                       ;display string to console
+
+					mov		lock_var,0
+
+                    ret
+
+DisplayProcessing   endp
+
+
+;************************************************************************************************************************
+; DisplayResult - This procedure converts the unsigned value in RAX into an ASCII string
+;
+; INPUTS:
+;
+;   RAX - number to convert to ASCII and display
+;   RDI - desitination address of where to store the ASCII result
+;
+; OUTPUTS:
+;   RAX - number of characters in the ASCII result
+;
+; ALL OTHER REGISTERS ARE PRESERVED
+;
+;************************************************************************************************************************
+UIntToASCII         proc uses rbx rcx rdx rdi
+
+                    xor     rcx,rcx                             ;used to hold the number of ASCII digits in the result
+                    mov     rbx,TEN_DECIMAL                     ;We will keep Dividing by 10 to convert number in EDX:EAX into ASCII
+
+DivideByTen:        xor     rdx,rdx                             ;clear RDX since we are doing unsigned division (RDX:RAX / RBX)
+                    div     rbx
+                    add     dl,'0'                              ;Convert decimal number to ASCII
+                    push    rdx                                 ;Save ASCII character ('0' - '9') on the stack so we can pop it later
+                    inc     rcx                                 ;increment number of ASCII characters stored on the stack
+                    or      rax,rax                             ;If EAX=0 we are finished
+                    jnz     DivideByTen                         ;Do we need to divide by 10 again?
+
+                    ;------------------------------------------------------------------------------
+                    ; POP ASCII representation of result off the stack and store it
+                    ;------------------------------------------------------------------------------
+                    mov     rax,rcx                             ;return number of characters in output string in RAX
+NextChar:           pop     rdx                                 ;ASCII character to display in DL
+                    mov     [rdi],dl                            ;we could display one character at a time but that is inefficient so store in output buffer
+                    inc     rdi
+                    loopd   NextChar                            ;Loop until all characters have been popped from the stack
+
+                    ret
+
+UIntToASCII         ENDP
+
+;************************************************************************************************************************
+; DisplayString - This procedure displays the string passed in 
+;
+; INPUTS:
+;
+;   RDX - address of string to display
+;   R8D - number of characters to display
+;
+; OUTPUTS:
+;   RAX - number of characters in the ASCII result
+;
+; ALL OTHER REGISTERS ARE PRESERVED
+;
+;************************************************************************************************************************
+DisplayString       proc uses rax rbx rcx rdx rdi rsi r8 r9 r10 r11 r12 r13 r14 r15
+                    Local BytesWritten:dword              ;Used by WriteConsole
+
+                    sub     rsp,SHADOW_MEM + TYPE QWORD 
+
+                    ;*********************************************
+                    ;Display String using Windows API call
+                    ;*********************************************
+                    mov     rcx,hStdOutput                      ;handle to standard output
+                    lea     r9,BytesWritten                     ;bytes written to output returned in this address
+                    xor     rax,rax                             ;last parameter is 0 
+                    mov     [rsp+SHADOW_MEM], rax               ;5th parameter is passed on the stack
+                    call    WriteConsoleA
+
+                    add     rsp,SHADOW_MEM + TYPE QWORD 
+                    ret
+
+DisplayString       ENDP
+
+;************************************************************************************************************************
+; GetCharacter - This procedure gets a character from the keyboard buffer, if no character is in the keyboard buffer
+;                if will return -1
+;
+; INPUTS:
+;   NONE
+;
+; OUTPUTS:
+;   AL - character or -1 if no character in the keyboard buffer
+;
+; ALL OTHER REGISTERS ARE PRESERVED
+;
+;************************************************************************************************************************
+GetCharacter        proc uses rbx rcx rdx rdi rsi r8 r9 r10 r11 r12 r13 r14 r15
+                    local   userInput:byte
+                    local   charsRead:dword
+
+                    sub     rsp,SHADOW_MEM + TYPE QWORD 
+
+                    mov     userInput,0
+
+                    mov     rcx,hStdInput               ;handle to standard input
+                    lea     rdx,UserInput               ;address where to store input data
+                    mov     r8d,SIZEOF UserInput        ;max number of bytes to store
+                    lea     r9,charsRead                ;bytes stored is returned in this address
+                    xor     rax,rax                     ;last parameter is 0 
+                    mov     [rsp+SHADOW_MEM], rax       ;5th parameter is passed on the stack
+                    call    ReadConsoleA
+
+                    add     rsp,SHADOW_MEM + TYPE QWORD 
+
+                    mov     al,UserInput
+
+                    ret
+
+GetCharacter        ENDP
+
+;************************************************************************************************************************
+; GetStandardHandle - This returns the standard handle that is passed in ecx
+;
+; INPUTS:
+;
+;   ECX - handle to get (i.e. STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, etc.)
+;
+; OUTPUTS:
+;   RAX - handle to standard output 
+;
+; ALL OTHER GENERAL REGISTERS ARE PRESERVED
+;
+;************************************************************************************************************************
+GetStandardHandle   proc uses rbx rcx rdx rdi rsi rbp r8 r9 r10 r11 r12 r13 r14 r15
+
+                    call GetStdHandle 
+                    ret
+
+GetStandardHandle   ENDP
+
+                    END
